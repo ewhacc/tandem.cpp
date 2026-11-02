@@ -196,7 +196,7 @@ With the defaults off the patch computes exactly what llama.cpp does; the defaul
 - Tested only with CUDA (NVIDIA GPUs) on Linux.
 - Qwen3.8 GGUFs converted with a current llama.cpp may be a little slower than the ISTA files we measured (one fusion does not apply to their layout).
 - Known issues, to be fixed:
-  - models much larger than RAM (read from the SSD): the CPU path does not take the misses, so tandem.cpp is slower than llama.cpp there (the consumer-PC DeepSeek row; Qwen3.8 IQ3_S with 32 GB of RAM and a 16 GB card: 12.1 against 13.9 tok/s);
+  - models much larger than RAM (read from the SSD): the CPU path does not take the misses, so most of the gain is lost there: about level with llama.cpp for Qwen3.8 IQ3_S on a 32 GB PC with a 16 GB card (16.5 against 15.8 tok/s), slower in the consumer-PC DeepSeek row;
   - the RAM rules (`LLAMA_MOE_PIN_EXPS`, `LLAMA_PLE_GPU_COPY`) look at physical RAM, not a cgroup limit; inside a container with a memory limit set both to 0;
   - with more than 3 draft tokens the auto margin can be too small for the new CUDA graphs (out of memory at the first longer verify); raise `--moe-cache-margin-mib`;
   - DeepSeek-V4.1 with `-lm none` loads very slowly (its 103 GiB Engram tables are copied page by page); run it without `-lm none`.
