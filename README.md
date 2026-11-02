@@ -49,7 +49,7 @@ llama-server -m model.gguf -ngl 99 -cmoe --moe-cache-mib auto -lm none -np 1 -c 
 - `-np 1 -c 16384`: one conversation with a 16k-token context. Without them llama-server opens 4 slots that share a small context, too short for a thinking model. `-c` is the total context; the KV cache comes out of the GPU memory the expert cache would get, so set it to what you need (on Qwen3.8, about 0.7 GiB per extra 16k tokens).
 - The startup line `failed to fit params ... n_gpu_layers already set by user to 99, abort` is expected: `-ngl 99` turns llama.cpp's automatic placement off, and the expert cache does the placement instead.
 - **Less RAM than the model** (e.g. Qwen3.8 IQ3_S, 78 GiB, on a 64 GB PC): leave out `-lm none`. The file stays mapped; the experts are copied once into pinned memory when the RAM holds them plus 10 GiB, and the rest is read from the file.
-- **Much less RAM (e.g. a 16 GB PC):** also pass `--cache-ram 0`. llama-server's prompt cache otherwise takes up to 8 GiB of RAM and pushes the experts out of the page cache (7× slower in our 12 GB test).
+- **Much less RAM (e.g. a 16 GB PC):** also pass `--cache-ram 0`. llama-server's prompt cache otherwise takes up to 8 GiB of RAM and pushes the experts out of the page cache.
 - Supported expert types for the CPU path: SwiGLU experts (fused or separate gate/up, optional clamp) and gpt-oss's SwiGLU-OAI with biases. For other types the server logs a warning and uploads every miss instead (correct, slower).
 
 Qwen3.8-Flash-Next with its MTP head (the head as a separate GGUF). Download the model (IQ3_S, 78 GiB, two files) and the head (Q4_K):
@@ -126,8 +126,6 @@ The models are larger than RAM with the OS, so both engines read them from the m
 - On 6 cores EAGLE3 slows both engines down: verifying several tokens multiplies the experts the CPU must run.
 - DeepSeek-V4.1 is three times this PC's RAM. Here tandem.cpp is slower than llama.cpp: its CPU path does not take misses that have to come from the SSD (to be fixed). Strata keeps a RAM store of the most-used experts.
 
-Little RAM: the same PC limited to 12 GB of RAM (`MemoryMax=12G`), Qwen3.8 IQ2_XS (39 GiB, three times that RAM), 6.7 GiB of experts on the GPU, greedy, 40 questions: tandem.cpp with `--cache-ram 0` runs at 56.9 tok/s (62.3 with all 64 GB), Strata v0.2.4.2 in its low-RAM mode at 34.1.
-
 ### Older workstation: i9-10900X (10 cores), 8× DDR4-2666 (78 GB/s), RTX 4090 24 GB, PCIe 3.0 x16
 
 | Model, setup | llama.cpp | tandem.cpp | |
@@ -198,7 +196,7 @@ With the defaults off the patch computes exactly what llama.cpp does; the defaul
 - Tested only with CUDA (NVIDIA GPUs) on Linux.
 - Qwen3.8 GGUFs converted with a current llama.cpp may be a little slower than the ISTA files we measured (one fusion does not apply to their layout).
 - Known issues, to be fixed:
-  - models much larger than RAM (read from the SSD): the CPU path does not take the misses, so the consumer-PC DeepSeek row is slower than llama.cpp;
+  - models much larger than RAM (read from the SSD): the CPU path does not take the misses, so tandem.cpp is slower than llama.cpp there (the consumer-PC DeepSeek row; Qwen3.8 IQ3_S with 32 GB of RAM and a 16 GB card: 12.1 against 13.9 tok/s);
   - the RAM rules (`LLAMA_MOE_PIN_EXPS`, `LLAMA_PLE_GPU_COPY`) look at physical RAM, not a cgroup limit; inside a container with a memory limit set both to 0;
   - with more than 3 draft tokens the auto margin can be too small for the new CUDA graphs (out of memory at the first longer verify); raise `--moe-cache-margin-mib`;
   - DeepSeek-V4.1 with `-lm none` loads very slowly (its 103 GiB Engram tables are copied page by page); run it without `-lm none`.
