@@ -25,6 +25,8 @@ We tuned for Qwen3.8 only, but other MoE models that do not fit in VRAM gain too
 
 [Strata](https://github.com/Niko1221/Strata) is a dedicated MoE offload engine for a few models. Its default skips low-ranked experts (`STRATA_ROUTE_TAIL_SKIP`), which is faster but approximate (127.1 tok/s on Qwen3.8 above); the tables show its exact mode (`STRATA_ROUTE_TAIL_SKIP=0`, every routed expert computed, as llama.cpp and tandem.cpp do). Full tables per machine are [below](#results).
 
+For a big card serving many concurrent streams, use [Tandem-vLLM](https://github.com/ewhacc/tandem) instead; tandem.cpp is for one user on a 16–32 GB card with the experts in RAM.
+
 ## What's new (2026-11-11)
 
 - Models larger than RAM: prompt batches read their missed experts ahead with several threads, and misses read from the SSD
@@ -288,6 +290,7 @@ With the defaults off the patch computes exactly what llama.cpp does; the defaul
   - models much larger than RAM (read from the SSD) depend on the drive; at 0.5x the model size in RAM (DeepSeek-V4.1 on 64 GB) tandem.cpp is now well ahead of llama.cpp (see the gaming-PC rows), but below about 0.3x (Qwen3.8 IQ3_S on 32 GB with a 16 GB card: 16.5 against 15.8 tok/s, earlier build) the gain is small;
   - the RAM rules (`LLAMA_MOE_PIN_EXPS`, `LLAMA_PLE_GPU_COPY`) look at physical RAM, not a cgroup limit; inside a container with a memory limit set both to 0;
   - with more than 3 draft tokens the auto margin can be too small for the new CUDA graphs (out of memory at the first longer verify); raise `--moe-cache-margin-mib`;
+  - the pooled CUDA graphs' buffers are not counted in `--moe-cache-margin-mib`, so long prompts on a 12 GB card can run out of memory; set `LLAMA_GRAPH_POOL=2`;
   - DeepSeek-V4.1 with `-lm none` loads very slowly (its 103 GiB Engram tables are copied page by page); run it without `-lm none`.
 
 ## Licence

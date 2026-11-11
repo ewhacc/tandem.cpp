@@ -6454,7 +6454,7 @@ index 6a343a7..6df5529 100644
      }
  
      ggml_backend_t backend(int32_t il) const {
-@@ -473,72 +2341,1130 @@ struct llama_moe_cache::impl {
+@@ -473,72 +2341,1133 @@ struct llama_moe_cache::impl {
      }
  
      ~impl() {
@@ -6805,7 +6805,19 @@ index 6a343a7..6df5529 100644
 +        t_pr_us += ggml_time_us() - t0;
 +    }
 +
-+    // spin until ready() (a new job), yielding after a while, sleeping briefly after ~1 s without a job (between requests)
++    // after the spin phase of a waiting loop: yield during the first second without work (decode keeps the wake-up immediate),
++    // then sleep on every pass (200 us, 1 ms after 10 s) so an idle server costs no CPU (issue #2: the old loop slept only one
++    // pass in 1024 and yielded in the others, ~0.5 core per thread in sched_yield while idle)
++    static void idle_pause(std::chrono::steady_clock::time_point t_idle) {
++        const auto idle = std::chrono::steady_clock::now() - t_idle;
++        if (idle < std::chrono::seconds(1)) {
++            std::this_thread::yield();
++        } else {
++            std::this_thread::sleep_for(idle < std::chrono::seconds(10) ? std::chrono::microseconds(200) : std::chrono::microseconds(1000));
++        }
++    }
++
++    // spin until ready() (a new job), then idle_pause
 +    template <typename F>
 +    static void idle_wait(F ready) {
 +        int64_t spins = 0;
@@ -6814,12 +6826,7 @@ index 6a343a7..6df5529 100644
 +            if (++spins < 4096) {
 +                continue;
 +            }
-+            if ((spins & 1023) == 0 && std::chrono::steady_clock::now() - t0 > std::chrono::seconds(1)) {
-+                std::this_thread::sleep_for(std::chrono::microseconds(100));
-+                spins = 4096;
-+            } else {
-+                std::this_thread::yield();
-+            }
++            idle_pause(t0);
 +        }
 +    }
 +
@@ -6959,11 +6966,7 @@ index 6a343a7..6df5529 100644
 +            if (spins == 4096) {
 +                t_idle = std::chrono::steady_clock::now();
 +            }
-+            if ((spins & 1023) == 0 && std::chrono::steady_clock::now() - t_idle > std::chrono::seconds(1)) {
-+                std::this_thread::sleep_for(std::chrono::microseconds(100));
-+            } else {
-+                std::this_thread::yield();
-+            }
++            idle_pause(t_idle);
 +        }
 +    }
 +
@@ -7633,7 +7636,7 @@ index 6a343a7..6df5529 100644
  
          // the get_rows that looks up the slots of the selected experts
          const int n_nodes = ggml_graph_n_nodes(graph);
-@@ -562,43 +3488,1052 @@ struct llama_moe_cache::impl {
+@@ -562,43 +3491,1052 @@ struct llama_moe_cache::impl {
          }
          GGML_ASSERT(ggml_is_contiguous(sel));
  
@@ -8695,7 +8698,7 @@ index 6a343a7..6df5529 100644
      void log_stats() const {
          auto log = [](const char * name, const stats & st) {
              const size_t n = st.hits + st.misses;
-@@ -610,14 +4545,122 @@ struct llama_moe_cache::impl {
+@@ -610,14 +4548,122 @@ struct llama_moe_cache::impl {
          };
          log("ubatch <= 8", stats_small);
          log("ubatch  > 8", stats_large);
@@ -8820,7 +8823,7 @@ index 6a343a7..6df5529 100644
  }
  
  llama_moe_cache::~llama_moe_cache() = default;
-@@ -635,11 +4678,111 @@ ggml_tensor * llama_moe_cache::get_experts(const ggml_tensor * w) const {
+@@ -635,11 +4681,111 @@ ggml_tensor * llama_moe_cache::get_experts(const ggml_tensor * w) const {
  }
  
  bool llama_moe_cache::copy(ggml_backend_t backend, const ggml_tensor * src, ggml_tensor * dst, ggml_cgraph * graph) {
@@ -8935,7 +8938,7 @@ index 6a343a7..6df5529 100644
  }
  
  std::map<ggml_backend_buffer_type_t, size_t> llama_moe_cache::memory_breakdown() const {
-@@ -654,3 +4797,125 @@ std::map<ggml_backend_buffer_type_t, size_t> llama_moe_cache::memory_breakdown()
+@@ -654,3 +4800,125 @@ std::map<ggml_backend_buffer_type_t, size_t> llama_moe_cache::memory_breakdown()
      }
      return res;
  }
