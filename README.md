@@ -13,9 +13,28 @@ On a consumer PC (i5-12400F, 64 GB DDR4, RTX 4090), GSM8K, decode tok/s:
 | gpt-oss-120b, greedy | 27.8 | **51.5** (1.85×) | — |
 | gpt-oss-120b, its recommended sampling | 27.7 | **48.0** (1.73×) | — |
 
+DeepSeek-V4.1-Flash IQ2_XS (139 GiB of experts, about twice the RAM) on a gaming PC (i5-14600KF, DDR4-3200, PCIe 4.0 SSD), greedy, decode tok/s:
+
+| GPU, RAM | llama.cpp | tandem.cpp | Strata |
+|---|---|---|---|
+| RTX 5070 Ti 16 GB, 64 GB | 7.4 | **14.2** (1.9×) | 10.4 |
+| RTX 5070 Ti + 5060 Ti (32 GB), 64 GB | — | **16.9** | — |
+| RTX 5090 32 GB, 128 GB | 11.5 | **33.1** (2.9×) | 28.0 |
+
 We tuned for Qwen3.8 only, but other MoE models that do not fit in VRAM gain too: typically 1.4–2.1× (gpt-oss-120b, GLM-4.5-Air, Qwen3.6-35B-A3B, DeepSeek-V4.1), less when the model nearly fits. Prompt processing is faster as well (1.4–1.8× on a 64k-token prompt).
 
 [Strata](https://github.com/Niko1221/Strata) is a dedicated MoE offload engine for a few models. Its default skips low-ranked experts (`STRATA_ROUTE_TAIL_SKIP`), which is faster but approximate (127.1 tok/s on Qwen3.8 above); the tables show its exact mode (`STRATA_ROUTE_TAIL_SKIP=0`, every routed expert computed, as llama.cpp and tandem.cpp do). Full tables per machine are [below](#results).
+
+## What's new (2026-11-11)
+
+- Models larger than RAM: prompt batches read their missed experts ahead with several threads, and misses read from the SSD
+  keep the drive busy. DeepSeek-V4.1 on a 64 GB PC with a 16 GB card is now 1.9× the speed of llama.cpp and 1.4× Strata's (the earlier build was slower than llama.cpp).
+- A launcher, `tandem-run.py`, that picks the flags for your machine ([Quick start](#quick-start)).
+- More GPU memory for the expert cache: the default reserve is 512 MiB (was 1024), and with `LLAMA_MTP_DRAFT_VOCAB` the MTP
+  head's full output layer stays in host memory (only the vocabulary subset is on the GPU).
+- The CPU path times its i-quant kernels once at startup and keeps the fastest for your CPU (Qwen3.8 IQ3_S: +4.5% on an i7-8700, +1.5% on an i5-14600KF).
+- The CPU/upload split leaves a little more to the CPU (factor 2.25 instead of Strata's 1.85: +2.7% on a 14600K, level elsewhere).
+- Pinned copies of the experts use huge pages when the RAM allows (a fragmented host lost up to 30% before).
 
 ## Build
 
@@ -34,6 +53,62 @@ cmake --build build -j --target llama-server
 
 Tested with CUDA 13.0–13.4 on Ubuntu 22.04 and 24.04, sm_89 (RTX 4090, RTX 6000 Ada) and sm_120 (RTX PRO 6000 Blackwell).
 
+## Quick start
+
+```
+bash build.sh                                  # builds llama-server (see Build above)
+python3 tandem-run.py --model qwen3.8          # or: gpt-oss-120b, or --model /path/to/any-moe.gguf
+```
+
+`tandem-run.py` is one file (Python 3 standard library; Linux + NVIDIA only). It looks at your machine, picks the flags from the
+[Run](#run) section for it, prints each flag with a one-line reason and the exact command, then runs `llama-server` in the
+foreground. When it prints `URL: http://127.0.0.1:8080/` the OpenAI-compatible API is ready at `/v1`.
+
+It finds `llama-server` on your `PATH`, in `$TANDEM_SERVER`, or at `--server-bin`. `qwen3.8` and `gpt-oss-120b` are built in
+with their MTP head / EAGLE3 draft: if the files are missing it shows the `hf download` commands and sizes and asks before
+downloading (`--yes` accepts; files go to `--models-dir`, default `~/tandem-models`). Any other GGUF gets the generic MoE rules
+and the plan says so. If the model fits in VRAM the launcher leaves the expert cache out, because plain llama.cpp is faster there.
+
+### Reading the plan
+
+```
+== Hardware ==   GPU, VRAM, PCIe, physical cores, RAM (the lower of MemTotal and the container limit), free disk, kernel
+== Model ==      which file, which draft
+== Plan ==       <flag>   <why>          one line per choice; "(no -lm none)" means a flag was left out on purpose
+                 note: / WARNING:        things to know about this machine (below)
+== Calibration == cached, or "will run on first start"
+== Command ==    copy this to run it by hand
+```
+
+### Dry run
+
+`--dry-run` prints the plan and starts nothing, downloads nothing. Use it to see what the launcher would do, or to test other
+hardware (`--assume-vram-gib`, `--assume-ram-gib`, `--assume-cores` apply the rules for a smaller machine; they do not limit the
+real hardware).
+
+### Calibration
+
+The first start for a machine, model and server build loads the model once per candidate draft count (the server cannot change it
+per request), measures decode speed on three short prompts, keeps the fastest and saves it to
+`~/.cache/tandem/<key>.json` (`$TANDEM_CACHE_DIR` moves it). It adds about 1-2 minutes after the first model load. Later starts reuse it.
+`--calibrate` redoes it and also tries one fewer draft token; `--no-calibrate` skips it and uses the rules.
+
+### Notes the plan may print
+
+- **The model is larger than RAM**: the experts are read from the SSD, so speed depends on the SSD, and the first requests are slower
+  while the cache warms. Below 0.6x the model size in RAM the drive sets the speed (DeepSeek-V4.1 on 64 GB: ~12 tok/s from a
+  PCIe 4.0 drive, ~8 from a DRAM-less one).
+- **Older kernels (before 6.1)**: they reclaim mapped model pages poorly. Expect slow loads when RAM is below the model size + 8 GiB.
+- **"This build predates the low-RAM fixes"**: your tandem.cpp is older than the RAM fixes. Update it; until then the launcher sets
+  `LLAMA_MOE_PIN_EXPS=0` and `LLAMA_PLE_GPU_COPY=0` when RAM is limited (a container limit is not seen by old builds).
+- In a container the launcher uses the memory limit (`memory.max`), not the host's RAM.
+
+### Other options
+
+`--port`, `--ctx` (default 16384), `--model-path` / `--draft` (your own files, e.g. another quant), `--no-draft`, `--gpu N`,
+`--extra "<llama-server flags>"` (appended last).
+`--fast` adds `LLAMA_MOE_TAIL_SKIP=7`: faster but **approximate** (quality: TODO).
+
 ## Run
 
 How it works: the experts live in host RAM, and the GPU memory left over holds a cache of recently used experts. The experts a token needs that are not in the cache are split between the CPU, which computes its share while the GPU runs the cached ones, and an upload into the cache. The split follows the measured CPU and PCIe speeds, using Strata's rule.
@@ -44,7 +119,7 @@ Any MoE model whose experts do not fit in VRAM:
 llama-server -m model.gguf -ngl 99 -cmoe --moe-cache-mib auto -lm none -np 1 -c 16384
 ```
 
-- `-cmoe` keeps every expert in host RAM. `--moe-cache-mib auto` gives the GPU memory left after the model, the KV cache and the compute buffers to the expert cache, minus `--moe-cache-margin-mib` (default 1024; a draft model's size is added automatically). A fixed size in MiB also works.
+- `-cmoe` keeps every expert in host RAM. `--moe-cache-mib auto` gives the GPU memory left after the model, the KV cache and the compute buffers to the expert cache, minus `--moe-cache-margin-mib` (default 512 MiB; a draft model's GPU size is added automatically). A fixed size in MiB also works.
 - `-lm none` reads the weights into RAM instead of mmapping the file.
 - `-np 1 -c 16384`: one conversation with a 16k-token context. Without them llama-server opens 4 slots that share a small context, too short for a thinking model. `-c` is the total context; the KV cache comes out of the GPU memory the expert cache would get, so set it to what you need (on Qwen3.8, about 0.7 GiB per extra 16k tokens).
 - The startup line `failed to fit params ... n_gpu_layers already set by user to 99, abort` is expected: `-ngl 99` turns llama.cpp's automatic placement off, and the expert cache does the placement instead.
@@ -111,6 +186,20 @@ Single user, the first 200 GSM8K test questions (zero-shot chat, max 2048 tokens
 
 Models: Qwen3.8-Flash-Next [ISTA GSQ-RCO](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF) IQ3_S (78 GiB) with the Q4_K MTP head above; gpt-oss-120b MXFP4 (`ggml-org`); Qwen3.6-35B-A3B UD-Q4_K_XL and GLM-4.5-Air Q4_K_M (unsloth); DeepSeek-V4.1-Flash-1017 [ISTA GSQ-RCO](https://huggingface.co/ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF) IQ2_XS (139 GiB of routed experts). We tuned for Qwen3.8 only.
 
+### Gaming PC: i5-14600KF (6P + 8E cores), DDR4-3200 (2 channels), Samsung PM9A1 (PCIe 4.0 NVMe)
+
+DeepSeek-V4.1-Flash-1017 IQ2_XS, no draft, greedy, the first 40 GSM8K questions (this build, 2026-11-11). At 64 GB the model is
+about twice the RAM, so most experts are read from the SSD; at 128 GB it fits.
+
+| GPU, RAM | llama.cpp | tandem.cpp | | Strata v0.2.9 exact | time to first token (llama.cpp / tandem.cpp / Strata) |
+|---|---|---|---|---|---|
+| RTX 5070 Ti 16 GB, 64 GB | 7.4 | 14.2 / 13.3 | 1.9× | 10.4 | 14.4 / 6.3 / 6.8 s |
+| RTX 5070 Ti + RTX 5060 Ti (32 GB, `-sm layer`), 64 GB | — | 16.9 | | — | — / 4.3 / — s |
+| RTX 5090 32 GB, 128 GB | 11.5 | 33.1 / 32.2 | 2.9× | 28.0 | 3.4 / 1.7 / 4.0 s |
+
+All cells answered 39–40 of 40 correctly. Two numbers for tandem.cpp are two runs (the ratio uses the first); the 32 GB row
+splits the layers over both cards (the RTX 5060 Ti sits in an x4 slot).
+
 ### Consumer PC: i5-12400F (6 cores), 64 GB DDR4 (43 GB/s), RTX 4090 24 GB, PCIe 4.0 x16
 
 The models are larger than RAM with the OS, so both engines read them from the mapped file.
@@ -120,11 +209,11 @@ The models are larger than RAM with the OS, so both engines read them from the m
 | Qwen3.8 IQ3_S, MTP | 29.8 / 29.4 | 97.3 / 96.1 | 3.3× / 3.3× | 103.6 / 98.1 |
 | gpt-oss-120b, no draft | 27.8 / 27.7 | 51.5 / 48.0 | 1.85× / 1.73× | |
 | gpt-oss-120b, EAGLE3 | 25.2 / 24.2 | 41.1 / 42.0 | 1.63× / 1.74× | |
-| DeepSeek-V4.1 IQ2_XS (3× RAM, from the SSD), no draft | 6.86 / – | 5.99 / – | 0.87× | 8.41 / – |
+| DeepSeek-V4.1 IQ2_XS (3× RAM, from the SSD), no draft, earlier build (2026-11-01) | 6.86 / – | 5.99 / – | 0.87× | 8.41 / – |
 
 - Strata exact is 6% ahead greedy and 2% sampled on Qwen3.8; its default mode, which skips low-ranked experts, gives 127.1. tandem.cpp's equivalent (`LLAMA_MOE_TAIL_SKIP=7`, approximate, off by default) gives 123.6 / 124.3.
 - On 6 cores EAGLE3 slows both engines down: verifying several tokens multiplies the experts the CPU must run.
-- DeepSeek-V4.1 is three times this PC's RAM. Here tandem.cpp is slower than llama.cpp: its CPU path does not take misses that have to come from the SSD (to be fixed). Strata keeps a RAM store of the most-used experts.
+- DeepSeek-V4.1 is three times this PC's RAM. That row is from the earlier build, which was slower than llama.cpp when misses had to come from the SSD; the current build reads them ahead with several threads (see the gaming-PC rows). This PC's GPU has since changed, so the row was not re-measured.
 
 ### Older workstation: i9-10900X (10 cores), 8× DDR4-2666 (78 GB/s), RTX 4090 24 GB, PCIe 3.0 x16
 
@@ -196,7 +285,7 @@ With the defaults off the patch computes exactly what llama.cpp does; the defaul
 - Tested only with CUDA (NVIDIA GPUs) on Linux.
 - Qwen3.8 GGUFs converted with a current llama.cpp may be a little slower than the ISTA files we measured (one fusion does not apply to their layout).
 - Known issues, to be fixed:
-  - models much larger than RAM (read from the SSD): the CPU path does not take the misses, so most of the gain is lost there: about level with llama.cpp for Qwen3.8 IQ3_S on a 32 GB PC with a 16 GB card (16.5 against 15.8 tok/s), slower in the consumer-PC DeepSeek row;
+  - models much larger than RAM (read from the SSD) depend on the drive; at 0.5x the model size in RAM (DeepSeek-V4.1 on 64 GB) tandem.cpp is now well ahead of llama.cpp (see the gaming-PC rows), but below about 0.3x (Qwen3.8 IQ3_S on 32 GB with a 16 GB card: 16.5 against 15.8 tok/s, earlier build) the gain is small;
   - the RAM rules (`LLAMA_MOE_PIN_EXPS`, `LLAMA_PLE_GPU_COPY`) look at physical RAM, not a cgroup limit; inside a container with a memory limit set both to 0;
   - with more than 3 draft tokens the auto margin can be too small for the new CUDA graphs (out of memory at the first longer verify); raise `--moe-cache-margin-mib`;
   - DeepSeek-V4.1 with `-lm none` loads very slowly (its 103 GiB Engram tables are copied page by page); run it without `-lm none`.
