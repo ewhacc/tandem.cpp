@@ -37,6 +37,9 @@ For a big card serving many concurrent streams, use [Tandem-vLLM](https://github
 - The CPU path times its i-quant kernels once at startup and keeps the fastest for your CPU (Qwen3.8 IQ3_S: +4.5% on an i7-8700, +1.5% on an i5-14600KF).
 - The CPU/upload split leaves a little more to the CPU (factor 2.25 instead of Strata's 1.85: +2.7% on a 14600K, level elsewhere).
 - Pinned copies of the experts use huge pages when the RAM allows (a fragmented host lost up to 30% before).
+- Fixes from [issue #2](https://github.com/ewhacc/tandem.cpp/issues/2) (2026-11-12): the CPU-expert threads sleep when idle
+  (3.3 cores busy at idle before, 0.03 now), and the auto cache size leaves room for the pooled graphs, which grow with the
+  context (long prompts on a 12 GB card ran out of memory).
 
 ## Build
 
@@ -173,7 +176,8 @@ The server applies these when the variable is unset (logged at startup); `VAR=0`
 | `GGML_CUDA_GRAPH_KEY_SHAPE` | `1` | one CUDA graph per batch shape |
 | `GGML_CUDA_MMVF_MAX` | `8` | vector kernel for float weights up to 8 columns |
 | `GGML_CUDA_Q8_CACHE` | `1` | reuse quantized activations across matvecs |
-| `LLAMA_GRAPH_POOL` | `6` | keep allocated graphs for alternating small batch shapes |
+| `LLAMA_GRAPH_POOL` | `6` | keep allocated graphs for alternating small batch shapes; with `--moe-cache-mib auto` fewer (or none) at long contexts |
+| `LLAMA_GRAPH_POOL_MIB` | `256` | VRAM those pooled graphs may take, measured at the full context and left out of the auto cache size |
 | `LLAMA_SRV_USER_BREAK` | `0` | no prompt-cache checkpoint at every user message |
 | `LLAMA_MTP_DEFER` | `1` | MTP catch-up decode deferred to the next draft |
 | `LLAMA_HC_FUSE`, `GGML_CUDA_HC_MIX_FUSE` | `1` | hyper-connection fusions (Qwen3.8) |
@@ -290,7 +294,6 @@ With the defaults off the patch computes exactly what llama.cpp does; the defaul
   - models much larger than RAM (read from the SSD) depend on the drive; at 0.5x the model size in RAM (DeepSeek-V4.1 on 64 GB) tandem.cpp is now well ahead of llama.cpp (see the gaming-PC rows), but below about 0.3x (Qwen3.8 IQ3_S on 32 GB with a 16 GB card: 16.5 against 15.8 tok/s, earlier build) the gain is small;
   - the RAM rules (`LLAMA_MOE_PIN_EXPS`, `LLAMA_PLE_GPU_COPY`) look at physical RAM, not a cgroup limit; inside a container with a memory limit set both to 0;
   - with more than 3 draft tokens the auto margin can be too small for the new CUDA graphs (out of memory at the first longer verify); raise `--moe-cache-margin-mib`;
-  - the pooled CUDA graphs' buffers are not counted in `--moe-cache-margin-mib`, so long prompts on a 12 GB card can run out of memory; set `LLAMA_GRAPH_POOL=2`;
   - DeepSeek-V4.1 with `-lm none` loads very slowly (its 103 GiB Engram tables are copied page by page); run it without `-lm none`.
 
 ## Licence
