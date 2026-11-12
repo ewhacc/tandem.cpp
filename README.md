@@ -44,6 +44,8 @@ For a big card serving many concurrent streams, use [Tandem-vLLM](https://github
   SMT or with E-cores got about half before (14600K: 13 threads instead of 9, level on speed; a 6-core/12-thread CPU is unchanged).
 - The RAM rules (pinned experts, the per-layer embedding table, read-ahead) also see a container's memory limit (Docker or
   Podman with cgroup v2, or cgroup v1), not only a systemd scope's.
+- Qwen3.8 with MTP keeps one recurrent state and replays the accepted tokens instead of a snapshot per draft position:
+  315 MiB more for the expert cache, +2.8% on a 16 GB card (exact; `LLAMA_GDN_REPLAY=0` restores the snapshots).
 - Fix (Qwen3.8 with MTP): after a speculative step that rejected draft tokens, a following batch of 64 or more tokens (the
   next turn's prompt) on Ampere, Ada or Blackwell GPUs started from the recurrent state that still included the rejected tokens.
 
@@ -188,6 +190,7 @@ The server applies these when the variable is unset (logged at startup); `VAR=0`
 | `LLAMA_MTP_DEFER` | `1` | MTP catch-up decode deferred to the next draft |
 | `LLAMA_HC_FUSE`, `GGML_CUDA_HC_MIX_FUSE` | `1` | hyper-connection fusions (Qwen3.8) |
 | `LLAMA_GDN_DIRECT`, `LLAMA_GDN_GATES` | `1` | Qwen3.8 gated delta net |
+| `LLAMA_GDN_REPLAY` | `1` | Qwen3.8 with speculative decoding, one sequence: one recurrent state plus the last step's inputs, replayed after a rollback, instead of a snapshot per draft position (450 → 135 MiB with 3 drafts) |
 | `LLAMA_CONV_CONT`, `LLAMA_CONV_TAIL` | `1` | Qwen3.8 conv state |
 | `LLAMA_PLE_GPU` | `1` | per-layer embeddings read by the GPU from pinned host memory |
 | `LLAMA_PLE_GPU_COPY` | auto | Linux 6.8+ (file mmaps cannot be pinned): copy the table to pinned memory, only when the RAM holds the model + 8 GiB |
