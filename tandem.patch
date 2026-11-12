@@ -9146,10 +9146,10 @@ index 6a343a760..9ef73f5dd 100644
 +    return it->second.first;
 +}
 diff --git a/src/llama-moe-cache.h b/src/llama-moe-cache.h
-index 6c8e365..b991a2c 100644
+index 6c8e36582..a84c99a16 100644
 --- a/src/llama-moe-cache.h
 +++ b/src/llama-moe-cache.h
-@@ -1,19 +1,61 @@
+@@ -1,19 +1,80 @@
  #pragma once
  
  #include "ggml-backend.h"
@@ -9166,12 +9166,13 @@ index 6c8e365..b991a2c 100644
  struct llama_model;
  
 -// keeps recently and repeatedly used experts of host-resident MoE layers in a device buffer
-+// the RAM this process can fill (Linux): MemTotal, or the memory.max of its cgroup (v2) or a cgroup above it if smaller
-+// (containers, systemd scopes); 0: unknown. Inline: the server uses it too
-+inline size_t llama_moe_ram_limit() {
++// the RAM this process can fill (Linux): MemTotal, or a smaller memory limit of its cgroup: v2 memory.max of its cgroup or one
++// above it, including the namespace root a container sees as "0::/" (Docker, Podman), or v1 memory.limit_in_bytes; 0: unknown.
++// Inline: the server uses it too. root: a prefix for /proc and /sys (tests)
++inline size_t llama_moe_ram_limit(const std::string & root = "") {
 +    size_t lim = 0;
 +#ifdef __linux__
-+    std::ifstream mi("/proc/meminfo");
++    std::ifstream mi(root + "/proc/meminfo");
 +    std::string k;
 +    size_t v = 0;
 +    while (mi >> k >> v) {
@@ -9181,20 +9182,38 @@ index 6c8e365..b991a2c 100644
 +        }
 +        std::getline(mi, k);
 +    }
-+    std::ifstream cg("/proc/self/cgroup");
-+    std::string line;
-+    while (std::getline(cg, line)) {
-+        if (line.rfind("0::", 0) != 0) {
-+            continue;
-+        }
-+        for (std::string path = line.substr(3); !path.empty() && path != "/"; path = path.substr(0, path.rfind('/'))) {
-+            std::ifstream f("/sys/fs/cgroup" + path + "/memory.max");
-+            std::string s;
-+            if (f >> s && s != "max") {
-+                const size_t m = std::stoull(s);
++    auto cap = [&lim](const std::string & file) {
++        std::ifstream f(file);
++        std::string s;
++        if (f >> s && s != "max" && !s.empty() && s.find_first_not_of("0123456789") == std::string::npos) {
++            const size_t m = std::stoull(s);
++            if (m > 0 && m < ((size_t) 1 << 62)) { // v1 writes ~2^63 for no limit
 +                lim = lim > 0 ? std::min(lim, m) : m;
 +            }
 +        }
++    };
++    std::ifstream cg(root + "/proc/self/cgroup");
++    std::string line;
++    while (std::getline(cg, line)) {
++        const size_t c1 = line.find(':');
++        const size_t c2 = c1 == std::string::npos ? std::string::npos : line.find(':', c1 + 1);
++        if (c2 == std::string::npos) {
++            continue;
++        }
++        const std::string ctrl = line.substr(c1 + 1, c2 - c1 - 1);
++        std::string path = line.substr(c2 + 1);
++        const bool v2 = line.rfind("0::", 0) == 0;
++        const bool v1 = !v2 && (ctrl == "memory" || ctrl.find("memory,") == 0 || ctrl.find(",memory") != std::string::npos);
++        if (!v2 && !v1) {
++            continue;
++        }
++        const std::string base = root + (v2 ? "/sys/fs/cgroup" : "/sys/fs/cgroup/memory");
++        const std::string file = v2 ? "/memory.max" : "/memory.limit_in_bytes";
++        // this cgroup and every one above it, then the mount root (a namespaced container's own cgroup)
++        for (; !path.empty() && path != "/"; path = path.substr(0, path.rfind('/'))) {
++            cap(base + path + file);
++        }
++        cap(base + file);
 +    }
 +#endif
 +    return lim;
@@ -9213,7 +9232,7 @@ index 6c8e365..b991a2c 100644
      ~llama_moe_cache();
  
      // the device that caches layer il
-@@ -28,15 +70,117 @@ public:
+@@ -28,15 +89,117 @@ public:
      // ggml_backend_sched copy callback, returns false if src is not a slot map
      bool copy(ggml_backend_t backend, const ggml_tensor * src, ggml_tensor * dst, ggml_cgraph * graph);
  

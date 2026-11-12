@@ -42,6 +42,8 @@ For a big card serving many concurrent streams, use [Tandem-vLLM](https://github
   context (long prompts on a 12 GB card ran out of memory).
 - The CPU threads default (`LLAMA_MOE_CPU_THREADS`) now counts physical cores within the process's CPU set: CPUs without
   SMT or with E-cores got about half before (14600K: 13 threads instead of 9, level on speed; a 6-core/12-thread CPU is unchanged).
+- The RAM rules (pinned experts, the per-layer embedding table, read-ahead) also see a container's memory limit (Docker or
+  Podman with cgroup v2, or cgroup v1), not only a systemd scope's.
 
 ## Build
 
@@ -294,7 +296,6 @@ With the defaults off the patch computes exactly what llama.cpp does; the defaul
 - Qwen3.8 GGUFs converted with a current llama.cpp may be a little slower than the ISTA files we measured (one fusion does not apply to their layout).
 - Known issues, to be fixed:
   - models much larger than RAM (read from the SSD) depend on the drive; at 0.5x the model size in RAM (DeepSeek-V4.1 on 64 GB) tandem.cpp is now well ahead of llama.cpp (see the gaming-PC rows), but below about 0.3x (Qwen3.8 IQ3_S on 32 GB with a 16 GB card: 16.5 against 15.8 tok/s, earlier build) the gain is small;
-  - the RAM rules (`LLAMA_MOE_PIN_EXPS`, `LLAMA_PLE_GPU_COPY`) look at physical RAM, not a cgroup limit; inside a container with a memory limit set both to 0;
   - DeepSeek-V4.1 with `-lm none` loads very slowly (its 103 GiB Engram tables are copied page by page); run it without `-lm none`.
 
 ## Licence
