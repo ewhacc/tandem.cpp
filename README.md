@@ -44,6 +44,8 @@ For a big card serving many concurrent streams, use [Tandem-vLLM](https://github
   SMT or with E-cores got about half before (14600K: 13 threads instead of 9, level on speed; a 6-core/12-thread CPU is unchanged).
 - The RAM rules (pinned experts, the per-layer embedding table, read-ahead) also see a container's memory limit (Docker or
   Podman with cgroup v2, or cgroup v1), not only a systemd scope's.
+- Fix (Qwen3.8 with MTP): after a speculative step that rejected draft tokens, a following batch of 64 or more tokens (the
+  next turn's prompt) on Ampere, Ada or Blackwell GPUs started from the recurrent state that still included the rejected tokens.
 
 ## Build
 
