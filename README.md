@@ -40,6 +40,8 @@ For a big card serving many concurrent streams, use [Tandem-vLLM](https://github
 - Fixes from [issue #2](https://github.com/ewhacc/tandem.cpp/issues/2) (2026-11-12): the CPU-expert threads sleep when idle
   (3.3 cores busy at idle before, 0.03 now), and the auto cache size leaves room for the pooled graphs, which grow with the
   context (long prompts on a 12 GB card ran out of memory).
+- The CPU threads default (`LLAMA_MOE_CPU_THREADS`) now counts physical cores within the process's CPU set: CPUs without
+  SMT or with E-cores got about half before (14600K: 13 threads instead of 9, level on speed; a 6-core/12-thread CPU is unchanged).
 
 ## Build
 
