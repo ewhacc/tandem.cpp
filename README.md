@@ -295,7 +295,6 @@ With the defaults off the patch computes exactly what llama.cpp does; the defaul
 - Known issues, to be fixed:
   - models much larger than RAM (read from the SSD) depend on the drive; at 0.5x the model size in RAM (DeepSeek-V4.1 on 64 GB) tandem.cpp is now well ahead of llama.cpp (see the gaming-PC rows), but below about 0.3x (Qwen3.8 IQ3_S on 32 GB with a 16 GB card: 16.5 against 15.8 tok/s, earlier build) the gain is small;
   - the RAM rules (`LLAMA_MOE_PIN_EXPS`, `LLAMA_PLE_GPU_COPY`) look at physical RAM, not a cgroup limit; inside a container with a memory limit set both to 0;
-  - with more than 3 draft tokens the auto margin can be too small for the new CUDA graphs (out of memory at the first longer verify); raise `--moe-cache-margin-mib`;
   - DeepSeek-V4.1 with `-lm none` loads very slowly (its 103 GiB Engram tables are copied page by page); run it without `-lm none`.
 
 ## Licence
