@@ -21,13 +21,28 @@ DeepSeek-V4.1-Flash IQ2_XS (139 GiB of experts, about twice the RAM) on a gaming
 | RTX 5070 Ti + 5060 Ti (32 GB), 64 GB | — | **16.9** | — |
 | RTX 5090 32 GB, 128 GB | 11.5 | **33.1** (2.9×) | 28.0 |
 
+Qwen3.8-Flash-Next IQ3_S + MTP (78 GiB) on a budget PC with only 32 GB of RAM (i5-12400F, RTX 5070 Ti 16 GB, DRAM-less PCIe 4.0 SSD), greedy, cold start:
+
+| llama.cpp | tandem.cpp | Strata |
+|---|---|---|
+| 14.9 | **34.3** (2.3×) | 30.3 |
+
 We tuned for Qwen3.8 only, but other MoE models that do not fit in VRAM gain too: typically 1.4–2.1× (gpt-oss-120b, GLM-4.5-Air, Qwen3.6-35B-A3B, DeepSeek-V4.1), less when the model nearly fits. Prompt processing is faster as well (1.4–1.8× on a 64k-token prompt).
 
 [Strata](https://github.com/Niko1221/Strata) is a dedicated MoE offload engine for a few models. Its default skips low-ranked experts (`STRATA_ROUTE_TAIL_SKIP`), which is faster but approximate (127.1 tok/s on Qwen3.8 above); the tables show its exact mode (`STRATA_ROUTE_TAIL_SKIP=0`, every routed expert computed, as llama.cpp and tandem.cpp do). Full tables per machine are [below](#results).
 
 For a big card serving many concurrent streams, use [Tandem-vLLM](https://github.com/ewhacc/tandem) instead; tandem.cpp is for one user on a 16–32 GB card with the experts in RAM.
 
-## What's new (2026-11-11)
+## What's new (2026-11-13)
+
+- Models much larger than RAM: when the experts outside VRAM do not fit in 85% of the RAM, the server keeps them in one pinned
+  block of RAM that it manages itself (read with direct I/O, not the page cache), and an expert lives either in VRAM or in that
+  block, never in both: an expert uploaded to the GPU leaves the block, and the expert it evicts from VRAM is copied back into
+  it. VRAM and RAM then act as one cache. Qwen3.8 IQ3_S on 32 GB with a 16 GB card: 34–35 tok/s (was 29), half the SSD reads,
+  first token 2.9 s (was 4.7); DeepSeek-V4.1 on 64 GB: +7–10%, 1.8× Strata on a DRAM-less SSD ([Results](#results)). Models that fit in RAM are unchanged. 2 GiB of RAM is left
+  free for the system and other programs. `LLAMA_MOE_STORE_AUTO=0` restores the previous behaviour ([Defaults](#defaults)).
+
+## Earlier (2026-11-11)
 
 - Models larger than RAM: prompt batches read their missed experts ahead with several threads, and misses read from the SSD
   keep the drive busy. DeepSeek-V4.1 on a 64 GB PC with a 16 GB card is now 1.9× the speed of llama.cpp and 1.4× Strata's (the earlier build was slower than llama.cpp).
@@ -179,6 +194,11 @@ The server applies these when the variable is unset (logged at startup); `VAR=0`
 | `LLAMA_MOE_PREFILL_CPU` | `auto` | the split for prompt batches |
 | `LLAMA_MOE_CPU_THREADS` | cores − 1 | CPU threads for missed experts |
 | `LLAMA_MOE_CPU_RB`, `LLAMA_MOE_CPU_DOWN_PE` | `64`, `64` | CPU expert job work-item layout |
+| `LLAMA_MOE_STORE_AUTO` | `1` | store mode (below) when the experts outside VRAM exceed 85% of the RAM and `LLAMA_MOE_ARENA_MIB` is unset |
+| `LLAMA_MOE_ARENA_MIB` | unset | `auto` forces store mode: the experts outside VRAM live in one pinned block of RAM (the whole RAM less the reserve), read with direct I/O |
+| `LLAMA_MOE_ARENA_RESERVE_MIB` | `2048` | store mode: RAM left free |
+| `LLAMA_MOE_ARENA_EXCL` | `1` | store mode: an expert is in VRAM or in the block, not both; the VRAM victim is copied back to RAM |
+| `LLAMA_MOE_ARENA_ASYNC` | `1` | store mode: decode reads from the SSD overlap the compute |
 | `LLAMA_MOE_PIN_EXPS` | auto | mmap mode: copy the mapped experts to pinned memory when the RAM holds them + 10 GiB |
 | `GGML_SCHED_BATCH_INPUTS` | `3` | a graph's host inputs in one packed upload |
 | `GGML_CUDA_GRAPH_KEY_SHAPE` | `1` | one CUDA graph per batch shape |
@@ -229,6 +249,24 @@ The models are larger than RAM with the OS, so both engines read them from the m
 - Strata exact is 6% ahead greedy and 2% sampled on Qwen3.8; its default mode, which skips low-ranked experts, gives 127.1. tandem.cpp's equivalent (`LLAMA_MOE_TAIL_SKIP=7`, approximate, off by default) gives 123.6 / 124.3.
 - On 6 cores EAGLE3 slows both engines down: verifying several tokens multiplies the experts the CPU must run.
 - DeepSeek-V4.1 is three times this PC's RAM. That row is from the earlier build, which was slower than llama.cpp when misses had to come from the SSD; the current build reads them ahead with several threads (see the gaming-PC rows). This PC's GPU has since changed, so the row was not re-measured.
+
+
+The same PC with an RTX 5070 Ti 16 GB instead of the 4090, on an MSI M450 drive (DRAM-less, PCIe 4.0), models much larger than
+RAM, from a cold start (page cache dropped), greedy, two runs per engine in mirrored order (2026-11-13).
+
+Qwen3.8-Flash-Next IQ3_S + MTP (78 GiB) at 32 GB of RAM (`mem=` boot), 8K context, the first 16 GSM8K questions:
+
+| | decode tok/s | read from the SSD | time to first token (median) |
+|---|---|---|---|
+| llama.cpp `-fit on`, the same MTP head | 14.9 / 15.1 | 294 / 290 GB | 5.1 / 5.3 s |
+| tandem.cpp (defaults: store mode) | **34.3 / 35.0** | 231 / 232 GB | 2.9 / 4.1 s |
+| Strata v0.2.9 exact, its own low-RAM setup and MTP settings | 30.3 / 32.0 | 492 / 418 GB | 4.3 / 4.2 s |
+
+All cells 15 of 16 correct. Strata's draft settings are its own (not the same speculative decoding as the other two rows).
+
+DeepSeek-V4.1-Flash IQ2_XS at 64 GB, no draft, the first 8 GSM8K questions: tandem.cpp
+**10.4 / 10.2** tok/s (374 / 385 GB read, first token 13.4 / 14.4 s), Strata v0.2.9 exact 5.7 / 5.7 (746 / 708 GB, 15.0 / 13.7 s):
+**1.8×**. All 8/8 correct. On the gaming PC's faster drive above the gap is smaller (1.4×).
 
 ### Older workstation: i9-10900X (10 cores), 8× DDR4-2666 (78 GB/s), RTX 4090 24 GB, PCIe 3.0 x16
 
@@ -300,7 +338,7 @@ With the defaults off the patch computes exactly what llama.cpp does; the defaul
 - Tested only with CUDA (NVIDIA GPUs) on Linux.
 - Qwen3.8 GGUFs converted with a current llama.cpp may be a little slower than the ISTA files we measured (one fusion does not apply to their layout).
 - Known issues, to be fixed:
-  - models much larger than RAM (read from the SSD) depend on the drive; at 0.5x the model size in RAM (DeepSeek-V4.1 on 64 GB) tandem.cpp is now well ahead of llama.cpp (see the gaming-PC rows), but below about 0.3x (Qwen3.8 IQ3_S on 32 GB with a 16 GB card: 16.5 against 15.8 tok/s, earlier build) the gain is small;
+  - models much larger than RAM (read from the SSD) depend on the drive (see the gaming-PC rows for a PCIe 4.0 drive);
   - DeepSeek-V4.1 with `-lm none` loads very slowly (its 103 GiB Engram tables are copied page by page); run it without `-lm none`.
 
 ## Licence
