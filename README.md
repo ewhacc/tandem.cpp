@@ -82,6 +82,33 @@ cmake --build build -j --target llama-server
 
 Tested with CUDA 13.0–13.4 on Ubuntu 22.04 and 24.04, sm_89 (RTX 4090, RTX 6000 Ada) and sm_120 (RTX PRO 6000 Blackwell).
 
+### AMD GPUs (ROCm)
+
+The patch builds with HIP. We use the same code as on CUDA, but we have not tuned it for AMD:
+
+```
+git clone https://github.com/ggml-org/llama.cpp tandem && cd tandem && git checkout f5222f25c
+git apply ../tandem.patch
+cmake -B build -DGGML_HIP=ON -DGGML_HIP_GRAPHS=ON -DGPU_TARGETS=gfx1100 -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j --target llama-server
+```
+
+Set `GPU_TARGETS` to your card (gfx1100 = RX 7900 series). `-DGGML_HIP_GRAPHS=ON` matters: without graphs every layer's kernels are
+launched one by one. For `-ot`, use the ROCm device name, `ROCm0`, where the examples say `CUDA0`. `tandem-run.py` supports NVIDIA only.
+
+Tested on one PC: i7-8700 (6 cores), 64 GB DDR4, RX 7900 XTX 24 GB on PCIe 3.0, Ubuntu 26.04 with its ROCm 7.1 packages.
+Qwen3.8-Flash-Next + MTP, greedy, the first 40 GSM8K questions, same day (2026-11-12), decode tok/s:
+
+| Engine, quant | tok/s |
+|---|---|
+| tandem.cpp IQ3_S | 65.6 |
+| Strata v0.2.9 IQ3_S | 70.4 |
+| Strata's RDNA3 fork IQ3_S | 80.2 |
+| Avalon IQ3_KS (its own quant) | 83.4 |
+
+On this 6-core CPU the AMD-specific engines are ahead. Most of the gap is the CPU's work on missed experts: IQ3_S is costly to
+decode on a CPU, and Avalon's own quant types decode cheaply.
+
 ## Quick start
 
 ```
@@ -336,7 +363,7 @@ With the defaults off the patch computes exactly what llama.cpp does; the defaul
 - Greedy output is not repeatable run to run with an expert cache: which experts are cached, and which misses the CPU computes, depends on timing, and the CPU and GPU round differently. Accuracy is unchanged. A fixed share (e.g. `LLAMA_MOE_CPU=0.2`) makes it repeatable.
 - Built for one user at a time. Concurrent requests work (tested at 2 and 4, accuracy unchanged) but gain less, and with a small cache several requests together can be slower in total than one.
 - Multi-GPU: only `-sm layer` (the default) works with the cache; checked for correctness on 2 GPUs, not tuned for speed.
-- Tested only with CUDA (NVIDIA GPUs) on Linux.
+- Linux only. Tuned and tested on NVIDIA (CUDA). AMD (ROCm) works, but it is untuned and was tested on one RX 7900 XTX ([above](#amd-gpus-rocm)).
 - Qwen3.8 GGUFs converted with a current llama.cpp may be a little slower than the ISTA files we measured (one fusion does not apply to their layout).
 - Known issues, to be fixed:
   - models much larger than RAM (read from the SSD) depend on the drive (see the gaming-PC rows for a PCIe 4.0 drive);
