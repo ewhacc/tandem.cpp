@@ -35,12 +35,13 @@ For a big card serving many concurrent streams, use [Tandem-vLLM](https://github
 
 ## What's new (2026-11-13)
 
-- Models much larger than RAM: when the experts outside VRAM do not fit in 85% of the RAM, the server keeps them in one pinned
-  block of RAM that it manages itself (read with direct I/O, not the page cache), and an expert lives either in VRAM or in that
-  block, never in both: an expert uploaded to the GPU leaves the block, and the expert it evicts from VRAM is copied back into
-  it. VRAM and RAM then act as one cache. Qwen3.8 IQ3_S on 32 GB with a 16 GB card: 34–35 tok/s (was 29), half the SSD reads,
-  first token 2.9 s (was 4.7); DeepSeek-V4.1 on 64 GB: +7–10%, 1.8× Strata on a DRAM-less SSD ([Results](#results)). Models that fit in RAM are unchanged. 2 GiB of RAM is left
-  free for the system and other programs. `LLAMA_MOE_STORE_AUTO=0` restores the previous behaviour ([Defaults](#defaults)).
+- **Big models on small PCs are much faster.** When a model is far larger than your RAM, tandem.cpp now uses VRAM and RAM
+  together as one large expert cache, so far less has to come from the SSD. It switches on by itself; nothing to set.
+  - Qwen3.8 (78 GiB) on a 32 GB PC with a 16 GB card: **34 tok/s, up from 29**. That's 2.3× llama.cpp and 1.13× Strata,
+    with half Strata's SSD reads and a faster first token.
+  - DeepSeek-V4.1 (139 GiB of experts) on a 64 GB PC: +7–10%, and **1.8× Strata** on a budget DRAM-less SSD.
+  - Models that fit in RAM run as before. 2 GiB of RAM stays free for your other programs.
+  - Details in [Results](#results); `LLAMA_MOE_STORE_AUTO=0` turns it off ([Defaults](#defaults)).
 
 ## Earlier (2026-11-11)
 
