@@ -4,32 +4,22 @@ tandem.cpp is a patch set for [llama.cpp](https://github.com/ggml-org/llama.cpp)
 
 It is an independent project, not affiliated with ggml-org. Base: llama.cpp `f5222f25c` (2026-10-28, see `BASE_COMMIT`).
 
-On a consumer PC (i5-12400F, 64 GB DDR4, RTX 4090), GSM8K, decode tok/s:
+Decode tok/s, one user, GSM8K questions. Each row is one model on one PC. Two numbers are greedy / the model's recommended sampling, one number is greedy.
 
-| Model | llama.cpp | tandem.cpp | Strata |
-|---|---|---|---|
-| Qwen3.8-Flash-Next IQ3_S + MTP, greedy | 29.8 | **97.3** (3.3×) | 103.6 |
-| same, Qwen's default sampling | 29.4 | **96.1** (3.3×) | 98.1 |
-| gpt-oss-120b, greedy | 27.8 | **51.5** (1.85×) | — |
-| gpt-oss-120b, its recommended sampling | 27.7 | **48.0** (1.73×) | — |
+| Model | GPU | RAM | CPU | llama.cpp | tandem.cpp | Strata |
+|---|---|---|---|---|---|---|
+| **Qwen3.8-Flash-Next** IQ3_S + MTP (78 GiB) | RTX 4090 24 GB | 64 GB | i5-12400F | 29.8 / 29.4 | **97.3 / 96.1** (3.3×) | 103.6 / 98.1 |
+| **Qwen3.8-Flash-Next** IQ3_S + MTP (78 GiB) | RTX 5070 Ti 16 GB | **32 GB** | i5-12400F | 14.9 | **34.3** (2.3×) | 30.3 |
+| **gpt-oss-120b** MXFP4 | RTX 4090 24 GB | 64 GB | i5-12400F | 27.8 / 27.7 | **51.5 / 48.0** (1.85×) | — |
+| **DeepSeek-V4.1-Flash** IQ2_XS (139 GiB of experts) | RTX 5070 Ti 16 GB | 64 GB | i5-14600KF | 7.4 | **14.2** (1.9×) | 10.4 |
+| **DeepSeek-V4.1-Flash** IQ2_XS | RTX 5070 Ti + 5060 Ti (32 GB) | 64 GB | i5-14600KF | — | **16.9** | — |
+| **DeepSeek-V4.1-Flash** IQ2_XS | RTX 5090 32 GB | 128 GB | i5-14600KF | 11.5 | **33.1** (2.9×) | 28.0 |
 
-DeepSeek-V4.1-Flash IQ2_XS (139 GiB of experts, about twice the RAM) on a gaming PC (i5-14600KF, DDR4-3200, PCIe 4.0 SSD), greedy, decode tok/s:
-
-| GPU, RAM | llama.cpp | tandem.cpp | Strata |
-|---|---|---|---|
-| RTX 5070 Ti 16 GB, 64 GB | 7.4 | **14.2** (1.9×) | 10.4 |
-| RTX 5070 Ti + 5060 Ti (32 GB), 64 GB | — | **16.9** | — |
-| RTX 5090 32 GB, 128 GB | 11.5 | **33.1** (2.9×) | 28.0 |
-
-Qwen3.8-Flash-Next IQ3_S + MTP (78 GiB) on a budget PC with only 32 GB of RAM (i5-12400F, RTX 5070 Ti 16 GB, DRAM-less PCIe 4.0 SSD), greedy, cold start:
-
-| llama.cpp | tandem.cpp | Strata |
-|---|---|---|
-| 14.9 | **34.3** (2.3×) | 30.3 |
+The 32 GB row is a cold start from a DRAM-less PCIe 4.0 SSD; at 64 GB DeepSeek-V4.1 is about twice the RAM and is read from a PCIe 4.0 SSD.
 
 We tuned for Qwen3.8 only, but other MoE models that do not fit in VRAM gain too: typically 1.4–2.1× (gpt-oss-120b, GLM-4.5-Air, Qwen3.6-35B-A3B, DeepSeek-V4.1), less when the model nearly fits. Prompt processing is faster as well (1.4–1.8× on a 64k-token prompt).
 
-[Strata](https://github.com/Niko1221/Strata) is a dedicated MoE offload engine for a few models. Its default skips low-ranked experts (`STRATA_ROUTE_TAIL_SKIP`), which is faster but approximate (127.1 tok/s on Qwen3.8 above); the tables show its exact mode (`STRATA_ROUTE_TAIL_SKIP=0`, every routed expert computed, as llama.cpp and tandem.cpp do). Full tables per machine are [below](#results).
+[Strata](https://github.com/Niko1221/Strata) is a dedicated MoE offload engine for a few models. Its default skips low-ranked experts (`STRATA_ROUTE_TAIL_SKIP`), which is faster but approximate (127.1 tok/s in the RTX 4090 Qwen3.8 row); the tables show its exact mode (`STRATA_ROUTE_TAIL_SKIP=0`, every routed expert computed, as llama.cpp and tandem.cpp do). Full tables per machine are [below](#results).
 
 For a big card serving many concurrent streams, use [Tandem-vLLM](https://github.com/ewhacc/tandem) instead; tandem.cpp is for one user on a 16–32 GB card with the experts in RAM.
 
