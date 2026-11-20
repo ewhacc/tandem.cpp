@@ -248,6 +248,23 @@ llama-server -m model.gguf -ngl 99 -cmoe --moe-cache-mib auto -lm none -np 1 -c 
 - **Much less RAM (e.g. a 16 GB PC):** also pass `--cache-ram 0`. llama-server's prompt cache otherwise takes up to 8 GiB of RAM and pushes the experts out of the page cache.
 - Supported expert types for the CPU path: SwiGLU experts (fused or separate gate/up, optional clamp) and gpt-oss's SwiGLU-OAI with biases. For other types the server logs a warning and uploads every miss instead (correct, slower).
 
+### Which model file
+
+Pick by RAM. Quality is the KL divergence of the next-token distribution against the original weights (Qwen3.8: the FP8 release; DeepSeek-V4.1: the official checkpoint), teacher-forced over about 8.6k tokens of greedy answers to 36 prompts; lower is better. Decode speed: tandem.cpp, cold start, greedy, 40 questions (16 for DeepSeek-V4.1), Qwen3.8 with the MTP head below.
+
+| Model | File | Size | KL | Top-1 agreement | RTX 5090 + 128 GB | RTX 5070 Ti + 64 GB | Pick |
+|---|---|---|---|---|---|---|---|
+| Qwen3.8-Flash-Next | bartowski [Q4_K_M](https://huggingface.co/bartowski/Qwen3.8-Flash-Next-GGUF) | 111 GiB | **0.0173** | 95.4% | 102 tok/s | — | best quality, 128 GB+ |
+| Qwen3.8-Flash-Next | bartowski [IQ4_XS](https://huggingface.co/bartowski/Qwen3.8-Flash-Next-GGUF) | 91 GiB | 0.0216 | 95.3% | 144 tok/s | 26 tok/s | balance, 128 GB |
+| Qwen3.8-Flash-Next | ISTA [IQ3_S](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF) | 78 GiB | 0.0259 | 94.8% | 191 tok/s | **76 tok/s** | fastest; the pick for 64 GB and 32 GB PCs |
+| DeepSeek-V4.1-Flash | ISTA [IQ2_XS](https://huggingface.co/ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF) | 139 GiB of experts | 0.1495 | 88.1% | 33 tok/s | 14 tok/s | the one we recommend for now |
+
+- On 64 GB, IQ4_XS's experts and Engram table no longer fit in RAM and are read from the SSD: 3× slower than IQ3_S, so IQ3_S is the pick there.
+- Qwen3.8 below 3 bits loses too much (IQ2_XS: KL 0.126, 89.0%); DeepSeek-V4.1, a much larger model, holds up at 2 bits.
+- Bartowski's Q4_K_M keeps the expert down-projections at 5–8 bits (5.3 bits per expert weight on average), which is where most of its lead comes from; IQ4_XS is 4.25.
+- A better DeepSeek-V4.1 quant is coming: VQ2 + FP4, the main quant of [Tandem-vLLM](https://github.com/ewhacc/tandem), already on Hugging Face for that engine. Its GGUF comes out together with Tandem-vLLM's support for both the original DeepSeek-V4.1 and VQ2.
+- The same MTP head works with all three Qwen3.8 files. For the bartowski files: `hf download bartowski/Qwen3.8-Flash-Next-GGUF --include 'Qwen3.8-Flash-Next-IQ4_XS/*' --local-dir models` (or `Q4_K_M`), then pass the first shard to `-m`.
+
 Qwen3.8-Flash-Next with its MTP head (the head as a separate GGUF). Download the model (IQ3_S, 78 GiB, two files) and the head (Q4_K):
 
 ```
