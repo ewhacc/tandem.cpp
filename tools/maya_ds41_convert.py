@@ -4,7 +4,11 @@ tandem.cpp load: the 3 main shards copied with split.count 3 -> 4 and split.tens
 sizes), and a 4th shard holding per_layer_token_embd.weight [256, n1 + n2] = the bytes of blk.1.engram_embd then
 blk.14.engram_embd (the upstream converter's order; check it with --check against a GSQ-RCO Engram file). Maya's files are
 only read. 2026-11-16.
-  maya_ds41_convert.py --maya-dir DIR [--engram-dir DIR] --out DIR [--check OUR_ENGRAM.gguf]
+  maya_ds41_convert.py --maya-dir DIR [--engram-dir DIR] --out DIR [--link] [--check OUR_ENGRAM.gguf]
+--link: shards 2.. become relative symlinks to Maya's files instead of copies (llama.cpp reads split.no from those shards,
+which is the same in both layouts, and nothing else it checks): only the first shard and the joined Engram table are
+written (Maya-S: about 210 GB instead of 340). Keep Maya's main shards then; its two Engram shards are not needed by
+tandem.cpp after the conversion. 2026-11-21.
 The shards are told apart by their contents (a shard holding only *.engram_embd.weight is an Engram shard), so Maya's
 Hugging Face folder (main shards and Engram shards side by side) works as is. Maya-S uses newer metadata (deepseek41.engram.*,
 per-layer hash offsets): its first shard is copied with the deepseek41.ple.* keys the loader reads added (offsets made global
@@ -209,6 +213,7 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--check", default="", help="a GSQ-RCO Engram file (per_layer_token_embd) to compare rows with")
     ap.add_argument("--check-only", action="store_true")
+    ap.add_argument("--link", action="store_true", help="symlink main shards 2.. to Maya's files instead of copying them")
     a = ap.parse_args()
     cand = sorted(set(glob.glob(f"{a.maya_dir}/*.gguf")) | set(glob.glob(f"{a.engram_dir or a.maya_dir}/*.gguf")))
     mains, engs = [], []
@@ -226,8 +231,17 @@ def main():
     if not a.check_only:
         for i, p in enumerate(mains):
             dst = f"{a.out}/{stem}-{i + 1:05d}-of-{n_main + 1:05d}.gguf"
-            patches = {"split.count": n_main + 1, "split.tensors.count": n_tensors}
+            if os.path.islink(dst):
+                os.remove(dst)   # a link from an earlier --link run: never write through it into Maya's file
             add = ple_keys(hs[i]["kv"])
+            if a.link and i > 0 and not add:
+                assert hs[i]["kv"]["split.no"][2] == i, f"{p}: split.no {hs[i]['kv']['split.no'][2]}, expected {i}"
+                if os.path.exists(dst):
+                    os.remove(dst)
+                os.symlink(os.path.relpath(os.path.abspath(p), os.path.dirname(os.path.abspath(dst))), dst)
+                print(f"linked {os.path.basename(dst)} -> {os.path.basename(p)}")
+                continue
+            patches = {"split.count": n_main + 1, "split.tensors.count": n_tensors}
             if add:
                 add_kv_copy(p, dst, patches, add)
             else:
@@ -240,6 +254,8 @@ def main():
                     tables.append((p, n, dims, t, off, h["data"]))
         tables.sort(key=lambda x: int(x[1].split(".")[1]))   # blk.1 then blk.14
         print("engram order:", [t[1] for t in tables])
+        if os.path.islink(out_eng):
+            os.remove(out_eng)   # never rewrite a header through a link into another set's file
         write_engram(tables, out_eng, n_main, n_main + 1, n_tensors)
     if a.check:
         n1 = None
