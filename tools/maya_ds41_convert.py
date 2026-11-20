@@ -6,7 +6,9 @@ blk.14.engram_embd (the upstream converter's order; check it with --check agains
 only read. 2026-11-16.
   maya_ds41_convert.py --maya-dir DIR [--engram-dir DIR] --out DIR [--check OUR_ENGRAM.gguf]
 The shards are told apart by their contents (a shard holding only *.engram_embd.weight is an Engram shard), so Maya's
-Hugging Face folder (main shards and Engram shards side by side) works as is, and so does Maya-S."""
+Hugging Face folder (main shards and Engram shards side by side) works as is. Maya-S uses newer metadata (deepseek41.engram.*,
+per-layer hash offsets): its first shard is copied with the deepseek41.ple.* keys the loader reads added (offsets made global
+into the joined table) and hash_layer_count 0. 2026-11-18."""
 import argparse, glob, os, shutil, struct, sys
 
 GGUF_TYPES = {0: "B", 1: "b", 2: "H", 3: "h", 4: "I", 5: "i", 6: "f", 7: "?", 10: "Q", 11: "q", 12: "d"}
@@ -49,8 +51,12 @@ def header(path):
             kv[k] = (t, pos, v)
             if k == "general.alignment":
                 align = v
+        elif t == 9 and k.startswith(("deepseek41.engram.", "deepseek41.ple.")):
+            et, n = rd(f, "I"), rd(f, "Q")
+            kv[k] = (t, pos, (et, [rd(f, GGUF_TYPES[et]) for _ in range(n)]))
         else:
             skip_val(f, t)
+    kv_end = f.tell()
     tensors = []
     for _ in range(nt):
         n = rs(f)
@@ -58,8 +64,68 @@ def header(path):
         dims = [rd(f, "Q") for _ in range(nd)]
         t, off = rd(f, "I"), rd(f, "Q")
         tensors.append((n, dims, t, off))
-    data = (f.tell() + align - 1) // align * align
-    return dict(ver=ver, kv=kv, tensors=tensors, data=data, align=align)
+    ti_end = f.tell()
+    data = (ti_end + align - 1) // align * align
+    return dict(ver=ver, nk=nk, kv=kv, kv_end=kv_end, ti_end=ti_end, tensors=tensors, data=data, align=align)
+
+
+def w_kv(f, k, t, v):
+    w_str(f, k)
+    f.write(struct.pack("<I", t))
+    if t == 8:
+        w_str(f, v)
+    elif t == 9:
+        et, vals = v
+        f.write(struct.pack("<IQ", et, len(vals)) + struct.pack("<%d%s" % (len(vals), GGUF_TYPES[et]), *vals))
+    else:
+        f.write(struct.pack("<" + GGUF_TYPES[t], v))
+
+
+def ple_keys(kv):
+    """Maya-S (newer Maya metadata) names the Engram hash deepseek41.engram.* with per-layer head offsets; the loader reads
+    deepseek41.ple.* (GSQ-RCO / upstream converter) with offsets into the joined table, and deepseek41.hash_layer_count.
+    Returns the keys to add, [] when the file already has them (Maya-XS)."""
+    if "deepseek41.ple.layers" in kv or "deepseek41.engram.layers" not in kv:
+        return []
+    E = lambda k: kv["deepseek41.engram." + k][2]
+    layers, nemb, offs, primes = E("layers")[1], E("num_embeddings")[1], E("offsets")[1], E("primes")[1]
+    per = len(offs) // len(layers)
+    base = [sum(nemb[:e]) for e in range(len(layers))]
+    goffs = [o + base[i // per] for i, o in enumerate(offs)]
+    add = [("deepseek41.ple.layers", 9, (4, layers)),
+           ("deepseek41.ple.ngram_size", 4, E("max_ngram_size")),
+           ("deepseek41.ple.heads_per_ngram", 4, E("head_count")),
+           ("deepseek41.embedding_length_per_layer_input", 4, E("head_dim")),
+           ("deepseek41.ple.layer_multipliers", 9, (10, E("multipliers")[1])),
+           ("deepseek41.ple.head_offsets", 9, (10, goffs)),
+           ("deepseek41.ple.head_vocab_sizes", 9, (10, primes))]
+    if "deepseek41.hash_layer_count" not in kv:
+        add.append(("deepseek41.hash_layer_count", 4, 0))   # no hash-routed layers (no tid2eid tensors), as in GSQ-RCO
+    return add
+
+
+def add_kv_copy(src, dst, patches, add):
+    """copy src to dst with the scalar kv patches applied and the keys in add appended to the kv section (the header grows,
+    tensor offsets are relative to the data start and stay)"""
+    h = header(src)
+    with open(src, "rb") as s:
+        head = bytearray(s.read(h["kv_end"]))
+        ti = s.read(h["ti_end"] - h["kv_end"])
+    struct.pack_into("<Q", head, 16, h["nk"] + len(add))
+    for k, v in patches.items():
+        t, pos, _ = h["kv"][k]
+        struct.pack_into("<" + GGUF_TYPES[t], head, pos, v)
+    with open(dst, "wb") as f:
+        f.write(head)
+        for k, t, v in add:
+            w_kv(f, k, t, v)
+        f.write(ti)
+        f.write(b"\0" * ((-f.tell()) % h["align"]))
+        with open(src, "rb") as s:
+            s.seek(h["data"])
+            shutil.copyfileobj(s, f, 64 << 20)
+    print(f"copied {os.path.basename(dst)}: " + ", ".join(f"{k} {h['kv'][k][2]} -> {v}" for k, v in patches.items())
+          + "; added " + ", ".join(k for k, *_ in add))
 
 
 def patch_copy(src, dst, patches):
@@ -86,21 +152,24 @@ def write_engram(tables, dst, split_no, split_count, n_tensors):
     ne0, qtype = tables[0][2][0], tables[0][3]
     assert all(t[2][0] == ne0 and t[3] == qtype for t in tables)
     sizes = [os.path.getsize(t[0]) - (t[5] + t[4]) for t in tables]
-    kvs = [("general.name", 8, "DeepSeek-V4.1-Flash-1017 Maya-XS Engram tables (Q6_K, from Maya's two shards)"),
+    kvs = [("general.name", 8, "DeepSeek-V4.1-Flash-1017 Maya Engram tables (from Maya's two Engram shards)"),
            ("split.no", 2, split_no), ("split.count", 2, split_count), ("split.tensors.count", 5, n_tensors)]
+    import io
+    hb = io.BytesIO()
+    hb.write(b"GGUF" + struct.pack("<IQQ", 3, 1, len(kvs)))
+    for k, t, v in kvs:
+        w_kv(hb, k, t, v)
+    w_str(hb, "per_layer_token_embd.weight")
+    hb.write(struct.pack("<I", 2) + struct.pack("<QQ", ne0, rows) + struct.pack("<IQ", qtype, 0))
+    hb.write(b"\0" * ((-hb.tell()) % 32))
+    hdr = hb.getvalue()
+    if os.path.exists(dst) and os.path.getsize(dst) == len(hdr) + sum(sizes):   # rerun: header only
+        with open(dst, "r+b") as f:
+            f.write(hdr)
+        print(f"kept {os.path.basename(dst)} (header rewritten)")
+        return
     with open(dst, "wb") as f:
-        f.write(b"GGUF" + struct.pack("<IQQ", 3, 1, len(kvs)))
-        for k, t, v in kvs:
-            w_str(f, k)
-            f.write(struct.pack("<I", t))
-            if t == 8:
-                w_str(f, v)
-            else:
-                f.write(struct.pack("<" + GGUF_TYPES[t], v))
-        w_str(f, "per_layer_token_embd.weight")
-        f.write(struct.pack("<I", 2) + struct.pack("<QQ", ne0, rows) + struct.pack("<IQ", qtype, 0))
-        pad = (-f.tell()) % 32
-        f.write(b"\0" * pad)
+        f.write(hdr)
         for (path, *_rest), sz in zip(tables, sizes):
             with open(path, "rb") as s:
                 s.seek(_rest[4] + _rest[3])
@@ -151,13 +220,18 @@ def main():
     os.makedirs(a.out, exist_ok=True)
     n_main = len(mains)
     hs = [header(p) for p in mains]
-    n_tensors = hs[0]["kv"]["split.tensors.count"][2] + 1
+    n_tensors = sum(len(h["tensors"]) for h in hs) + 1   # Maya-S counts its Engram tensors in split.tensors.count, Maya-XS does not
     stem = os.path.basename(mains[0]).rsplit("-00001-of-", 1)[0]
     out_eng = f"{a.out}/{stem}-{n_main + 1:05d}-of-{n_main + 1:05d}.gguf"
     if not a.check_only:
         for i, p in enumerate(mains):
-            patch_copy(p, f"{a.out}/{stem}-{i + 1:05d}-of-{n_main + 1:05d}.gguf",
-                       {"split.count": n_main + 1, "split.tensors.count": n_tensors})
+            dst = f"{a.out}/{stem}-{i + 1:05d}-of-{n_main + 1:05d}.gguf"
+            patches = {"split.count": n_main + 1, "split.tensors.count": n_tensors}
+            add = ple_keys(hs[i]["kv"])
+            if add:
+                add_kv_copy(p, dst, patches, add)
+            else:
+                patch_copy(p, dst, patches)
         tables = []
         for p in engs:
             h = header(p)
