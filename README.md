@@ -2,7 +2,8 @@
 
 tandem.cpp is a patch set for [llama.cpp](https://github.com/ggml-org/llama.cpp) that runs MoE models much larger than your
 GPU, and larger than your RAM too. The most-used experts sit in a VRAM cache, the CPU computes a share of the misses, and the
-rest are read from RAM or the SSD. It works with any MoE model llama.cpp supports, for one user at a time.
+rest are read from RAM or the SSD. **It works with any MoE model llama.cpp supports**, for one user at a time: measured on
+Qwen3.8-Flash-Next, DeepSeek-V4.1-Flash, gpt-oss-120b, GLM-4.5-Air and Qwen3.6-35B-A3B, from 22 GB to over 300 GB of weights.
 
 It is an independent project, not affiliated with ggml-org. Base: llama.cpp `f5222f25c` (2026-10-28, see `BASE_COMMIT`).
 Version **v0.5.0** (2026-11-23). Changes: [CHANGELOG.md](CHANGELOG.md).
