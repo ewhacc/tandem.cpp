@@ -5,7 +5,7 @@ quick start and model commands are enough: the defaults below are what we measur
 
 ## How it works and the flags
 
-How it works: the experts live in host RAM, and the GPU memory left over holds a cache of recently used experts. The experts a token needs that are not in the cache are split between the CPU, which computes its share while the GPU runs the cached ones, and an upload into the cache. The split follows the measured CPU and PCIe speeds, using Strata's rule.
+How it works: the experts live in host RAM, and the GPU memory left over holds a cache of recently used experts. The experts a token needs that are not in the cache are split between the CPU, which computes its share while the GPU runs the cached ones, and an upload into the cache. The split follows the measured CPU and PCIe speeds, using Strata's rule; while it runs, tandem.cpp tunes the split around the rule and saves the result for the next start (`LLAMA_MOE_SHARE_TUNE`, below).
 
 Any MoE model whose experts do not fit in VRAM:
 
@@ -74,6 +74,8 @@ The server applies these when the variable is unset (logged at startup); `VAR=0`
 |---|---|---|
 | `LLAMA_MOE_CPU` | `auto` | CPU/GPU split for missed experts (`0..1` = fixed share uploaded) |
 | `LLAMA_MOE_PREFILL_CPU` | `auto` | the split for prompt batches |
+| `LLAMA_MOE_SHARE_TUNE` | `1` | with `LLAMA_MOE_CPU=auto`, decode tries the uploaded share at the rule's ±0.1 in short blocks, moves 0.1 when the same side wins twice, and saves the offset per model, GPUs and cache size, RAM and threads (v0.5.1) |
+| `LLAMA_MOE_TUNE_FILE` | `$XDG_CACHE_HOME/tandem/share-tune.tsv` (else `~/.cache/…`) | where the tuner keeps its offsets; `0`: no file (each start tunes from the rule) |
 | `LLAMA_MOE_CPU_THREADS` | cores − 1 | CPU threads for missed experts |
 | `LLAMA_MOE_CPU_RB`, `LLAMA_MOE_CPU_DOWN_PE` | `64`, `64` | CPU expert job work-item layout |
 | `LLAMA_MOE_STORE_AUTO` | `1` | store mode (below) when `LLAMA_MOE_ARENA_MIB` is unset and either the experts outside VRAM exceed the RAM, or all experts exceed 85% of the RAM and VRAM + the block can hold every one |
