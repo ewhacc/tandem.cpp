@@ -3,6 +3,13 @@
 Each release's notes as they were written then; numbers are from that release's build and date. Current numbers are in the
 [README](README.md), older comparison tables in [docs/results.md](docs/results.md).
 
+## v0.5.2 (2026-11-27)
+
+- **The split tuner is steadier.** It compares the settings side by side many times and moves only when one is clearly
+  faster, so a fresh start lands on the same setting every time instead of wandering (one PC moved 7 times in a run before).
+  On a 16 GB card with 64 GB, Qwen3.8 IQ3_S finds its faster setting in the first run: 76–77 tok/s in three fresh runs, 79
+  from the second. Settings worth only ~2% stay at the rule.
+
 ## v0.5.1 (2026-11-27)
 
 - **The CPU/upload split now tunes itself on your PC and remembers it.** While it runs, tandem.cpp tries uploading slightly more

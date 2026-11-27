@@ -74,7 +74,7 @@ The server applies these when the variable is unset (logged at startup); `VAR=0`
 |---|---|---|
 | `LLAMA_MOE_CPU` | `auto` | CPU/GPU split for missed experts (`0..1` = fixed share uploaded) |
 | `LLAMA_MOE_PREFILL_CPU` | `auto` | the split for prompt batches |
-| `LLAMA_MOE_SHARE_TUNE` | `1` | with `LLAMA_MOE_CPU=auto`, decode tries the uploaded share at the rule's ±0.1 in short blocks, moves 0.1 when the same side wins twice, and saves the offset per model, GPUs and cache size, RAM and threads (v0.5.1) |
+| `LLAMA_MOE_SHARE_TUNE` | `1` | with `LLAMA_MOE_CPU=auto`, decode tries the uploaded share at the rule's ±0.1 in short blocks, moves 0.1 when one side is clearly faster over several trials (v0.5.2), and saves the offset per model, GPUs and cache size, RAM and threads (v0.5.1) |
 | `LLAMA_MOE_TUNE_FILE` | `$XDG_CACHE_HOME/tandem/share-tune.tsv` (else `~/.cache/…`) | where the tuner keeps its offsets; `0`: no file (each start tunes from the rule) |
 | `LLAMA_MOE_CPU_THREADS` | cores − 1 | CPU threads for missed experts |
 | `LLAMA_MOE_CPU_RB`, `LLAMA_MOE_CPU_DOWN_PE` | `64`, `64` | CPU expert job work-item layout |
